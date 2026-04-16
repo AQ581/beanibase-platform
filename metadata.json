@@ -1,0 +1,5 @@
+{
+  "name": "Beanibase",
+  "description": "A supportive space where AI personas (Coaches) don't yell at you, but sit with you through the journey of growth.",
+  "requestFramePermissions": ["microphone"]
+}

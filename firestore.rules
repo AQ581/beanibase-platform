@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - The user's ID
+    //   - email: string (required) - The user's email
+    //   - displayName: string (optional) - The user's name
+    //   - photoURL: string (optional) - The user's photo URL
+    //   - cushionFluffiness: number (optional) - Progress score
+    //   - createdAt: string (optional) - Creation timestamp
+    //
+    // Collection: users/{userId}/checkIns
+    // Document ID: {checkInId}
+    // Fields:
+    //   - uid: string (required) - The user's ID
+    //   - coachId: string (required) - The coach ID
+    //   - timestamp: string (required) - ISO date string
+    //   - reflection: string (optional) - User notes
+    //
+    // Collection: users/{userId}/conversations
+    // Document ID: {conversationId}
+    // Fields:
+    //   - uid: string (required) - The user's ID
+    //   - coachId: string (required) - The coach ID
+    //   - timestamp: string (required) - ISO date string
+    //   - messages: array (required) - List of chat messages
+    //   - summary: string (optional) - Session summary
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid is string && data.uid.size() < 128 &&
+             data.email is string && data.email.size() < 256 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 1000)) &&
+             (!('cushionFluffiness' in data) || (data.cushionFluffiness is number && data.cushionFluffiness >= 0)) &&
+             (!('subscriptionType' in data) || (data.subscriptionType in ['free', 'monthly', 'lifetime'])) &&
+             (!('subscriptionExpiry' in data) || (data.subscriptionExpiry is string || data.subscriptionExpiry == null)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() < 64));
+    }
+
+    function isValidCheckIn(data) {
+      return data.keys().hasAll(['uid', 'coachId', 'timestamp']) &&
+             data.uid is string && data.uid.size() < 128 &&
+             data.coachId is string && data.coachId.size() < 64 &&
+             data.timestamp is string && data.timestamp.size() < 64 &&
+             (!('reflection' in data) || (data.reflection is string && data.reflection.size() < 5000));
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['uid', 'coachId', 'timestamp', 'messages']) &&
+             data.uid is string && data.uid.size() < 128 &&
+             data.coachId is string && data.coachId.size() < 64 &&
+             data.timestamp is string && data.timestamp.size() < 64 &&
+             data.messages is list && data.messages.size() < 200 &&
+             (!('summary' in data) || (data.summary is string && data.summary.size() < 2000));
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) &&
+                    request.resource.data.uid == resource.data.uid;
+      
+      match /checkIns/{checkInId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidCheckIn(request.resource.data);
+      }
+
+      match /conversations/{conversationId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidConversation(request.resource.data);
+        allow update: if isOwner(userId) && isValidConversation(request.resource.data);
+      }
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "A user of the Beanibase platform.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique ID of the user." },
+        "email": { "type": "string", "format": "email", "description": "The user's email address." },
+        "displayName": { "type": "string", "description": "The user's display name." },
+        "photoURL": { "type": "string", "format": "uri", "description": "The user's profile picture URL." },
+        "cushionFluffiness": { "type": "number", "description": "A score representing the user's progress." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user account was created." }
+      },
+      "required": ["uid", "email"]
+    },
+    "checkIn": {
+      "title": "Check-In",
+      "description": "A daily check-in or 'Return Cushion' event.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The ID of the user who checked in." },
+        "coachId": { "type": "string", "description": "The ID of the coach persona interacted with." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the check-in occurred." },
+        "reflection": { "type": "string", "description": "The user's reflection or notes from the session." }
+      },
+      "required": ["uid", "coachId", "timestamp"]
+    },
+    "conversation": {
+      "title": "Conversation",
+      "description": "A full chat history session with a coach.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The ID of the user." },
+        "coachId": { "type": "string", "description": "The ID of the coach." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the session started." },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "enum": ["user", "model"] },
+              "text": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "summary": { "type": "string", "description": "A brief summary of the session for future context." }
+      },
+      "required": ["uid", "couchId", "timestamp", "messages"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User profile and progress data."
+    },
+    "/users/{userId}/checkIns/{checkInId}": {
+      "schema": "checkIn",
+      "description": "History of user interactions with coaches."
+    },
+    "/users/{userId}/conversations/{conversationId}": {
+      "schema": "conversation",
+      "description": "Full chat histories for context and follow-up."
+    }
+  }
+}

@@ -1,0 +1,10 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>
+  <rect width='24' height='24' rx='7' fill='#F97316'/>
+  <path d='M7 10L5 4L10 7' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/>
+  <path d='M17 10L19 4L14 7' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/>
+  <path d='M4 12C4 9.79086 5.79086 8 8 8H16C18.2091 8 20 9.79086 20 12V17C20 19.2091 18.2091 21 16 21H8C5.79086 21 4 19.2091 4 17V12Z' fill='white'/>
+  <circle cx='8.5' cy='13.5' r='1.2' fill='#F97316' />
+  <circle cx='15.5' cy='13.5' r='1.2' fill='#F97316' />
+  <path d='M11 16L12 17L13 16' stroke='#F97316' stroke-width='1.5' stroke-linecap='round'/>
+  <path d='M20 17C22 17 23 15 23 13' stroke='white' stroke-width='2.5' stroke-linecap='round' fill='none'/>
+</svg>
