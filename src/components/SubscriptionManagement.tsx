@@ -109,7 +109,7 @@ export const SubscriptionManagement: FC<SubscriptionManagementProps> = ({
             <span className="text-xs font-bold uppercase tracking-widest">Payment</span>
           </div>
           <p className="text-lg font-bold">
-            {isPremium ? 'Stripe Secure' : 'None linked'}
+            {isPremium ? 'Active via Stripe' : 'Free Tier (No card on file)'}
           </p>
         </div>
       </div>

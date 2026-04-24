@@ -1,6 +1,7 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
-import { auth, googleProvider, signInWithPopup, signOut, db, onAuthStateChanged, User, handleFirestoreError, OperationType } from './firebase';
-import { getRedirectResult } from 'firebase/auth';
+import { db, handleFirestoreError, OperationType } from './firebase';
+import { useAuth } from './contexts/AuthContext';
+import { loginWithGoogle, logout } from './services/authService';
 import { doc, onSnapshot, setDoc, collection, addDoc, query, orderBy, limit } from 'firebase/firestore';
 import { COACHES } from './constants';
 import { Coach, UserProfile, CheckIn } from './types';
@@ -10,6 +11,8 @@ import { MasterTechnicianSection } from './components/MasterTechnicianSection';
 import { SubscriptionManagement } from './components/SubscriptionManagement';
 import { HowItWorksModal } from './components/HowItWorksModal';
 import { BeanibaseLogo } from './components/BeanibaseLogo';
+import { PrivacyPolicy } from './components/PrivacyPolicy';
+import { TermsOfService } from './components/TermsOfService';
 import { NotFound } from './components/NotFound';
 import { cn } from './lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -25,60 +28,141 @@ const Loader2 = ({ className }: { className?: string }) => (
 );
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const { user, loading, isGuest, setIsGuest } = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [selectedCoach, setSelectedCoach] = useState<Coach | null>(null);
   const [initialQuery, setInitialQuery] = useState<string | undefined>(undefined);
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [isPricingOpen, setIsPricingOpen] = useState(false);
+  const [pricingFeatureName, setPricingFeatureName] = useState<string | null>(null);
   const [isHowItWorksOpen, setIsHowItWorksOpen] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [legalView, setLegalView] = useState<'privacy' | 'terms' | null>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname.startsWith('/privacy')) return 'privacy';
+      if (window.location.pathname.startsWith('/terms')) return 'terms';
+    }
+    return null;
+  });
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setIsAuthReady(true);
-      if (u) {
-        const userRef = doc(db, 'users', u.uid);
-        console.log("DEBUG: Authenticated user UID:", u.uid);
-        const unsubProfile = onSnapshot(userRef, (docSnap) => {
-          console.log("DEBUG: Snapshot for path:", userRef.path, "exists:", docSnap.exists());
-          if (docSnap.exists()) {
-            setProfile(docSnap.data() as UserProfile);
-          } else {
-            const newProfile: UserProfile = {
-              uid: u.uid,
-              email: u.email || '',
-              displayName: u.displayName || 'Coach Potato',
-              photoURL: u.photoURL || '',
-              cushionFluffiness: 0,
-              trialMessagesUsed: 0,
-              subscriptionType: 'free',
-              createdAt: new Date().toISOString(),
-            };
-            setDoc(userRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${u.uid}`));
-          }
-        }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
-
-        const checkInsRef = collection(db, 'users', u.uid, 'checkIns');
-        const q = query(checkInsRef, orderBy('timestamp', 'desc'), limit(10));
-        const unsubCheckIns = onSnapshot(q, (snap) => {
-          setCheckIns(snap.docs.map(d => d.data() as CheckIn));
-        }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}/checkIns`));
-
-        return () => {
-          unsubProfile();
-          unsubCheckIns();
-        };
+    // 1. Loading circuit breaker
+    if (loading) return;
+    
+    // 2. Guest Logic
+    if (isGuest && !user) {
+      const guestData = localStorage.getItem('beanibase_guest_profile');
+      const today = new Date().toLocaleDateString();
+      if (guestData) {
+        const data = JSON.parse(guestData) as UserProfile;
+        if (data.lastActiveDate !== today) {
+          data.messagesToday = 0;
+          data.sessionsToday = 0;
+          data.lastActiveDate = today;
+          localStorage.setItem('beanibase_guest_profile', JSON.stringify(data));
+        }
+        setProfile(data);
       } else {
-        setProfile(null);
-        setCheckIns([]);
+        const newGuest: UserProfile = {
+          uid: 'guest-' + Math.random().toString(36).substr(2, 9),
+          email: '',
+          displayName: 'Guest Sit-ter',
+          photoURL: '',
+          cushionFluffiness: 0,
+          trialMessagesUsed: 0,
+          messagesToday: 0,
+          sessionsToday: 0,
+          lastActiveDate: today,
+          subscriptionType: 'free',
+          createdAt: new Date().toISOString(),
+        };
+        setProfile(newGuest);
+        localStorage.setItem('beanibase_guest_profile', JSON.stringify(newGuest));
+      }
+
+      const guestCheckIns = localStorage.getItem('beanibase_guest_checkins');
+      if (guestCheckIns) {
+        setCheckIns(JSON.parse(guestCheckIns));
+      }
+      return;
+    }
+
+    if (!user) {
+      setProfile(null);
+      setCheckIns([]);
+      setSyncError(null);
+      return;
+    }
+
+    // 3. Data fetching for authenticated users (Firestore)
+    const userRef = doc(db, 'users', user.uid);
+    console.log("DEBUG: Authenticated user UID:", user.uid);
+    const unsubProfile = onSnapshot(userRef, (docSnap) => {
+      setSyncError(null);
+      const today = new Date().toLocaleDateString();
+      if (docSnap.exists()) {
+        const data = docSnap.data() as UserProfile;
+        let requiresUpdate = false;
+        
+        if (!data.displayName || data.displayName === 'Guest Sit-ter' || data.displayName === 'Coach Potato') {
+          if (user.displayName) {
+             data.displayName = user.displayName;
+             requiresUpdate = true;
+          }
+        }
+        
+        if (data.lastActiveDate !== today) {
+           data.messagesToday = 0;
+           data.sessionsToday = 0;
+           data.lastActiveDate = today;
+           requiresUpdate = true;
+        }
+
+        if (requiresUpdate) {
+            setDoc(userRef, data, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
+        }
+
+        setProfile(data);
+      } else {
+        const newProfile: UserProfile = {
+          uid: user.uid,
+          email: user.email || '',
+          displayName: user.displayName || 'Coach Potato',
+          photoURL: user.photoURL || '',
+          cushionFluffiness: 0,
+          trialMessagesUsed: 0,
+          messagesToday: 0,
+          sessionsToday: 0,
+          lastActiveDate: today,
+          subscriptionType: 'free',
+          createdAt: new Date().toISOString(),
+        };
+        setDoc(userRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));
+      }
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('insufficient')) {
+        setSyncError("Your session sanctuary is misaligned. Please Log Out and Log In again to refresh your connection.");
       }
     });
-    return unsubscribe;
-  }, []);
+
+    const checkInsRef = collection(db, 'users', user.uid, 'checkIns');
+    const q = query(checkInsRef, orderBy('timestamp', 'desc'), limit(10));
+    const unsubCheckIns = onSnapshot(q, (snap) => {
+      setSyncError(null);
+      setCheckIns(snap.docs.map(d => d.data() as CheckIn));
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, `users/${user.uid}/checkIns`);
+    });
+
+    return () => {
+      unsubProfile();
+      unsubCheckIns();
+    };
+  }, [user, loading]);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -106,12 +190,72 @@ export default function App() {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      console.error("Login failed:", err);
-      setLoginError(err.message || "An unexpected error occurred during login.");
-    } finally {
+      await loginWithGoogle();
       setIsLoggingIn(false);
+    } catch (err: any) {
+      console.error("DEBUG: Login failed:", err);
+      setIsLoggingIn(false);
+      setLoginError(`Login failed: ${err.message}`);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      setIsGuest(false);
+      localStorage.removeItem('beanibase_guest_profile');
+      localStorage.removeItem('beanibase_guest_checkins');
+      await logout();
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  };
+
+  const handleSelectCoach = async (coach: Coach, query?: string) => {
+    // 1. Feature Gate for Premium Coaches
+    if ((coach.id === 'trade-skill-learning' || coach.id === 'master-technician') && profile?.subscriptionType === 'free') {
+      setPricingFeatureName(coach.name);
+      setIsPricingOpen(true);
+      return;
+    }
+
+    // 2. Session Limit Logic
+    if (profile?.subscriptionType === 'free') {
+      const today = new Date().toISOString().split('T')[0];
+      const dbLastActive = profile.lastActiveDate || '';
+      const isNewDay = dbLastActive !== today;
+      
+      let currentSessions = isNewDay ? 0 : (profile.sessionsToday || 0);
+      let remaining = 2 - currentSessions;
+      
+      if (remaining <= 0) {
+        setPricingFeatureName(null);
+        setIsPricingOpen(true);
+        return;
+      }
+
+      // If user or guest, update session counts
+      if (user) {
+        const userRef = doc(db, 'users', user.uid);
+        await setDoc(userRef, {
+          sessionsToday: currentSessions + 1,
+          messagesToday: isNewDay ? 0 : profile.messagesToday,
+          lastActiveDate: today
+        }, { merge: true }).catch(err => console.error("Could not update session count", err));
+      } else if (isGuest) {
+         const newGuest = {
+           ...profile,
+           sessionsToday: currentSessions + 1,
+           messagesToday: isNewDay ? 0 : profile.messagesToday,
+           lastActiveDate: today
+         };
+         setProfile(newGuest);
+         localStorage.setItem('beanibase_guest_profile', JSON.stringify(newGuest));
+      }
+    }
+    
+    setSelectedCoach(coach);
+    if (query) {
+      setInitialQuery(query);
     }
   };
 
@@ -150,50 +294,99 @@ export default function App() {
   };
 
   const handleCheckIn = async (reflection: string) => {
-    if (!user || !selectedCoach) return;
+    if ((!user && !isGuest) || !selectedCoach || !profile) return;
     
     // Optimistic Update
-    const currentFluff = profile?.cushionFluffiness || 0;
-    const currentUsed = profile?.trialMessagesUsed || 0;
-    setProfile(prev => prev ? { 
-      ...prev, 
+    const currentFluff = profile.cushionFluffiness || 0;
+    const currentUsed = profile.trialMessagesUsed || 0;
+    const updatedProfile = { 
+      ...profile, 
       cushionFluffiness: currentFluff + 1,
       trialMessagesUsed: currentUsed + 1
-    } : null);
+    };
+    setProfile(updatedProfile);
 
     const checkIn: CheckIn = {
-      uid: user.uid,
+      uid: user?.uid || profile.uid,
       coachId: selectedCoach.id,
       timestamp: new Date().toISOString(),
       reflection,
     };
 
+    if (isGuest && !user) {
+      const newCheckIns = [checkIn, ...checkIns].slice(0, 10);
+      setCheckIns(newCheckIns);
+      localStorage.setItem('beanibase_guest_profile', JSON.stringify(updatedProfile));
+      localStorage.setItem('beanibase_guest_checkins', JSON.stringify(newCheckIns));
+      return;
+    }
+
     try {
-      await addDoc(collection(db, 'users', user.uid, 'checkIns'), checkIn).catch(e => handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}/checkIns`));
-      const userRef = doc(db, 'users', user.uid);
-      await setDoc(userRef, { 
-        cushionFluffiness: currentFluff + 1,
-        trialMessagesUsed: currentUsed + 1
-      }, { merge: true }).catch(e => {
-        // Rollback on error
-        setProfile(prev => prev ? { ...prev, cushionFluffiness: currentFluff } : null);
-        handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`);
-      });
+      if (user) {
+        await addDoc(collection(db, 'users', user.uid, 'checkIns'), checkIn).catch(e => handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}/checkIns`));
+        const userRef = doc(db, 'users', user.uid);
+        await setDoc(userRef, { 
+          cushionFluffiness: currentFluff + 1,
+          trialMessagesUsed: currentUsed + 1
+        }, { merge: true }).catch(e => {
+          setProfile(prev => prev ? { ...prev, cushionFluffiness: currentFluff } : null);
+          handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`);
+        });
+      }
     } catch (err) {
       console.error("Check-in failed:", err);
       setProfile(prev => prev ? { ...prev, cushionFluffiness: currentFluff } : null);
     }
   };
 
-  if (!isAuthReady) {
+  useEffect(() => {
+    if (!loading && (user || isGuest) && profile) {
+      if (profile.cushionFluffiness === 0 && checkIns.length === 0) {
+        const hasSeenOnboarding = sessionStorage.getItem('beanibase_seen_onboarding');
+        if (!hasSeenOnboarding) {
+          setIsHowItWorksOpen(true);
+          sessionStorage.setItem('beanibase_seen_onboarding', 'true');
+        }
+      }
+    }
+  }, [loading, user, isGuest, profile, checkIns.length]);
+
+  if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#F5F2ED]">
-        <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-[#F5F2ED]">
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col items-center space-y-6"
+        >
+          <div className="relative">
+            <div className="absolute inset-0 bg-black/5 blur-xl rounded-full scale-150 animate-pulse" />
+            <LucideLoader2 className="w-12 h-12 text-black animate-spin relative" />
+          </div>
+          <div className="text-center space-y-2">
+            <p className="text-lg font-medium text-black tracking-tight">Aligning your cushion...</p>
+            <p className="text-sm text-gray-500 max-w-[200px]">Preparing your focused sitting space.</p>
+          </div>
+        </motion.div>
       </div>
     );
   }
 
-  if (!user) {
+  if (legalView === 'privacy') {
+    return <PrivacyPolicy onBack={() => {
+      window.history.pushState({}, '', '/');
+      setLegalView(null);
+    }} />;
+  }
+
+  if (legalView === 'terms') {
+    return <TermsOfService onBack={() => {
+      window.history.pushState({}, '', '/');
+      setLegalView(null);
+    }} />;
+  }
+
+  if (!user && !isGuest) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-[#F5F2ED] relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
@@ -221,25 +414,42 @@ export default function App() {
           </p>
 
           {loginError && (
-            <div className="bg-red-50 border border-red-100 text-red-600 px-6 py-3 rounded-2xl text-sm max-w-md mx-auto">
-              {loginError}
+            <div className="bg-red-50 border border-red-100 p-6 rounded-[32px] max-w-md mx-auto">
+              <div className="flex items-center space-x-3 text-red-600">
+                <Shield className="w-5 h-5 flex-shrink-0" />
+                <p className="text-sm font-bold text-left leading-tight">{loginError}</p>
+              </div>
             </div>
           )}
 
-          <button 
-            onClick={handleLogin}
-            disabled={isLoggingIn}
-            className="group relative inline-flex items-center space-x-3 px-8 py-4 bg-black text-white rounded-full font-bold text-lg hover:scale-105 transition-all shadow-xl disabled:opacity-50 disabled:hover:scale-100"
-          >
-            {isLoggingIn ? (
-              <LucideLoader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <LogIn className="w-5 h-5" />
-            )}
-            <span>{isLoggingIn ? 'Connecting...' : 'Start your Beanibase Sit'}</span>
-            <div className="absolute inset-0 rounded-full bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-          </button>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <button 
+              onClick={handleLogin}
+              disabled={isLoggingIn}
+              className="group relative inline-flex items-center space-x-3 px-8 py-4 bg-black text-white rounded-full font-bold text-lg hover:scale-105 transition-all shadow-xl disabled:opacity-50 disabled:hover:scale-100 w-full sm:w-auto"
+            >
+              {isLoggingIn ? (
+                <LucideLoader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <LogIn className="w-5 h-5" />
+              )}
+              <span>{isLoggingIn ? 'Connecting...' : 'Login with Google'}</span>
+              <div className="absolute inset-0 rounded-full bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+
+            <button 
+              onClick={() => setIsGuest(true)}
+              className="px-8 py-4 bg-white text-black border-2 border-black rounded-full font-bold text-lg hover:bg-gray-50 transition-all w-full sm:w-auto shadow-md"
+            >
+              Continue as Guest
+            </button>
+          </div>
         </motion.div>
+
+        <div className="absolute bottom-6 left-0 w-full text-center flex justify-center space-x-6 z-10">
+          <a href="/privacy" className="text-xs text-gray-500 hover:text-orange-600 transition-colors font-medium">Privacy Policy</a>
+          <a href="/terms" className="text-xs text-gray-500 hover:text-orange-600 transition-colors font-medium">Terms of Service</a>
+        </div>
       </div>
     );
   }
@@ -248,60 +458,116 @@ export default function App() {
     <div className="min-h-screen bg-[#F5F2ED] pb-24 text-[#1A1A1A]">
       {/* Header */}
       <header className="max-w-7xl mx-auto px-6 py-8 flex items-center justify-between border-b border-black/5">
-        <div className="flex items-center space-x-3">
+        <motion.div 
+          whileHover={{ scale: 1.05 }}
+          className="flex items-center space-x-4 cursor-pointer"
+        >
           <BeanibaseLogo size="sm" />
-          <span className="text-xl font-display font-bold tracking-tight">Beanibase</span>
-        </div>
+          <span className="text-2xl font-display font-bold tracking-tighter text-gradient">Beanibase</span>
+        </motion.div>
 
         <div className="flex items-center space-x-6">
           <button 
             onClick={() => setIsHowItWorksOpen(true)}
-            className="hidden md:flex items-center space-x-2 px-4 py-2 bg-white text-gray-600 rounded-full shadow-sm border border-gray-100 hover:bg-gray-50 transition-all"
+            className="hidden md:flex items-center space-x-2 px-6 py-2 bg-white text-gray-600 rounded-full shadow-soft border border-gray-100 hover:bg-gray-50 transition-all text-sm font-medium"
           >
-            <span className="text-sm font-medium">How it works</span>
+            Philosophy
           </button>
 
           {profile?.subscriptionType === 'free' && (
             <button 
               onClick={() => setIsPricingOpen(true)}
-              className="hidden md:flex items-center space-x-2 px-4 py-2 bg-black text-white rounded-full shadow-lg hover:scale-105 transition-all group"
+              className="hidden md:flex items-center space-x-3 px-6 py-2 bg-[#1A1A1A] text-white rounded-full shadow-xl hover:scale-105 transition-all group"
             >
               <Crown className="w-4 h-4 text-orange-400 group-hover:rotate-12 transition-transform" />
-              <span className="text-sm font-bold">Go Premium</span>
+              <span className="text-sm font-bold tracking-tight">Upgrade</span>
             </button>
           )}
-          <div className="hidden lg:flex items-center space-x-2 px-4 py-2 bg-white rounded-full shadow-sm border border-gray-100">
-            <Crown className={cn("w-4 h-4", profile?.subscriptionType === 'free' ? "text-gray-300" : "text-orange-400")} />
-            <span className="text-sm font-medium">
-              {profile?.subscriptionType === 'free' ? 'Free Plan' : 'Beanbag Plus'}
+          
+          <div className="hidden lg:flex items-center space-x-3 px-5 py-2 bg-white rounded-full shadow-soft border border-gray-100">
+            <Crown className={cn("w-4 h-4", profile?.subscriptionType === 'free' ? "text-gray-200" : "text-amber-500")} />
+            <span className="text-xs font-bold uppercase tracking-widest text-gray-500">
+              {profile?.subscriptionType === 'free' ? 'Standard' : 'Plus Member'}
             </span>
           </div>
 
-          <div className="hidden md:flex items-center space-x-2 px-4 py-2 bg-white rounded-full shadow-sm border border-gray-100">
-            <Sparkles className="w-4 h-4 text-orange-400" />
-            <span className="text-sm font-medium">
-              Fluffiness: {profile?.cushionFluffiness || 0} 
-              <span className="text-gray-400 ml-1">
-                (Level {Math.floor((profile?.cushionFluffiness || 0) / 10) + 1})
-              </span>
+          <div 
+            className="hidden md:flex items-center space-x-3 px-5 py-2 bg-white rounded-full shadow-soft border border-gray-100 cursor-help"
+            title="Fluff points measure your progress and sessions completed. Level up over time!"
+          >
+            <div className="relative">
+              <Sparkles className="w-4 h-4 text-amber-500" />
+              <motion.div 
+                animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                className="absolute inset-0 bg-amber-200 rounded-full blur-md"
+              />
+            </div>
+            <span className="text-xs font-bold uppercase tracking-widest text-gray-500">
+              Fluff: {profile?.cushionFluffiness || 0}
             </span>
           </div>
-          <button 
-            onClick={() => signOut(auth)}
-            className="p-2 rounded-full hover:bg-gray-200 transition-colors"
-            title="Sign Out"
-          >
-            <LogOut className="w-5 h-5 text-gray-500" />
-          </button>
-          <img 
-            src={profile?.photoURL || 'https://api.dicebear.com/7.x/avataaars/svg?seed=coach'} 
-            alt="Profile" 
-            className="w-10 h-10 rounded-full border-2 border-white shadow-sm"
-          />
+
+          {profile?.subscriptionType === 'free' && (
+            <div className="hidden md:flex items-center space-x-2 px-4 py-2 bg-orange-50 border border-orange-200 text-orange-700 rounded-full shadow-soft text-xs font-black uppercase tracking-widest cursor-help"
+                 title="Free tier includes 2 full sessions per day.">
+              {Math.max(0, 2 - (profile?.sessionsToday || 0))} Sits Left
+            </div>
+          )}
+
+          <div className="flex items-center space-x-4 pl-4 border-l border-black/5">
+            <button 
+              onClick={handleLogout}
+              className="p-2.5 rounded-full hover:bg-gray-100 transition-colors group"
+              title="Sign Out"
+            >
+              <LogOut className="w-5 h-5 text-gray-400 group-hover:text-red-500 transition-colors" />
+            </button>
+            <motion.div
+              whileHover={{ scale: 1.1 }}
+              className="relative"
+            >
+              <img 
+                src={profile?.photoURL || 'https://api.dicebear.com/7.x/avataaars/svg?seed=coach'} 
+                alt="Profile" 
+                className="w-10 h-10 rounded-full border-2 border-white shadow-soft object-cover"
+              />
+              <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full" />
+            </motion.div>
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-6 mt-12 space-y-16">
+        <AnimatePresence>
+          {syncError && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="bg-orange-50 border border-orange-200 p-6 rounded-[32px] flex flex-col md:flex-row items-center justify-between gap-6">
+                <div className="flex items-center space-x-4 text-orange-800">
+                  <div className="p-3 bg-white rounded-2xl shadow-sm">
+                    <Shield className="w-6 h-6 text-orange-500" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold">Sanctuary Sync Issue</h4>
+                    <p className="text-sm opacity-80">{syncError}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="px-6 py-3 bg-[#1A1A1A] text-white rounded-full font-bold text-sm shadow-xl hover:scale-105 transition-all whitespace-nowrap"
+                >
+                  Refresh Sanctuary (Log Out)
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Hero Section */}
         <section className="space-y-6">
           <motion.div
@@ -317,7 +583,7 @@ export default function App() {
         </section>
 
         {/* Coach Grid */}
-        <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+        <section id="coach-selection" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           {COACHES.filter(c => c.id !== 'trade-skill-learning' && c.id !== 'original-beanbag').map((coach, i) => (
             <motion.div
               key={coach.id}
@@ -327,7 +593,7 @@ export default function App() {
             >
               <CoachCard 
                 coach={coach} 
-                onClick={setSelectedCoach} 
+                onClick={handleSelectCoach} 
               />
             </motion.div>
           ))}
@@ -341,7 +607,7 @@ export default function App() {
               <p className="text-sm text-gray-500 font-light">No specialty. Just a good chat.</p>
             </div>
             <button 
-              onClick={() => setSelectedCoach(COACHES.find(c => c.id === 'original-beanbag')!)}
+              onClick={() => handleSelectCoach(COACHES.find(c => c.id === 'original-beanbag')!)}
               className="px-8 py-4 bg-white text-orange-600 rounded-full font-bold text-lg hover:scale-105 transition-all shadow-sm border border-orange-100"
             >
               Start Chat
@@ -350,10 +616,9 @@ export default function App() {
         </section>
 
         <ResearchSection onSelectCoach={(coach, query) => {
-          setSelectedCoach(coach);
-          setInitialQuery(query);
+          handleSelectCoach(coach, query);
         }} />
-        <MasterTechnicianSection onSelectCoach={setSelectedCoach} />
+        <MasterTechnicianSection onSelectCoach={handleSelectCoach} />
 
         {/* Subscription Management */}
         <SubscriptionManagement 
@@ -441,17 +706,24 @@ export default function App() {
               <span className="text-sm text-gray-400">Last 14 days</span>
             </div>
             
-            <div className="h-48 flex items-end justify-between px-4">
-              {Array.from({ length: 14 }).map((_, i) => (
-                <div 
-                  key={i} 
-                  className={cn(
-                    "w-3 rounded-full transition-all duration-1000",
-                    i % 3 === 0 ? "bg-orange-200 h-24" : "bg-gray-100 h-12",
-                    i === 13 && "bg-orange-500 h-32 shadow-lg shadow-orange-200"
-                  )}
-                />
-              ))}
+            <div className="h-48 flex items-end justify-between px-4 pb-6 relative">
+              {Array.from({ length: 14 }).map((_, i) => {
+                const date = new Date();
+                date.setDate(date.getDate() - (13 - i));
+                const dayLabel = date.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+                return (
+                  <div key={i} className="flex flex-col items-center gap-2">
+                    <div 
+                      className={cn(
+                        "w-3 rounded-full transition-all duration-1000",
+                        i % 3 === 0 ? "bg-orange-200 h-24" : "bg-gray-100 h-12",
+                        i === 13 && "bg-orange-500 h-32 shadow-lg shadow-orange-200"
+                      )}
+                    />
+                    <span className="text-[10px] text-gray-400 font-medium">{dayLabel}</span>
+                  </div>
+                );
+              })}
             </div>
             <p className="text-center text-sm text-gray-400 font-light italic">
               "No streaks that punish you. Just cushions to return to."
@@ -466,7 +738,17 @@ export default function App() {
             
             <div className="space-y-6">
               {checkIns.length === 0 ? (
-                <p className="text-sm text-gray-400 italic">Your coach is waiting for its first session.</p>
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-400 italic">Your coach is waiting for its first session.</p>
+                  <button
+                    onClick={() => {
+                      document.getElementById('coach-selection')?.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="text-sm font-medium text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 px-4 py-2 rounded-full transition-colors"
+                  >
+                    Start First Session
+                  </button>
+                </div>
               ) : (
                 checkIns.map((ci, i) => (
                   <div key={i} className="flex items-start space-x-4">
@@ -488,7 +770,21 @@ export default function App() {
         </section>
 
         {/* Footer */}
-        <footer className="mt-20 pb-10 border-t border-black/5 pt-10 text-center">
+        <footer className="mt-20 pb-10 border-t border-black/5 pt-10 text-center space-y-4">
+          <div className="flex items-center justify-center space-x-6">
+            <a 
+              href="/privacy"
+              className="text-xs text-gray-400 hover:text-orange-600 transition-colors font-medium"
+            >
+              Privacy Policy
+            </a>
+            <a 
+              href="/terms"
+              className="text-xs text-gray-400 hover:text-orange-600 transition-colors font-medium"
+            >
+              Terms of Service
+            </a>
+          </div>
           <div className="flex items-center justify-center space-x-3">
             <BeanibaseLogo className="w-6 h-6 opacity-40" />
             <span className="text-sm text-gray-400 font-medium">© 2026 Beanibase. All rights reserved.</span>
@@ -513,8 +809,12 @@ export default function App() {
               onCheckIn={handleCheckIn}
               initialMessage={initialQuery}
               subscriptionType={profile?.subscriptionType}
-              onUpgrade={() => setIsPricingOpen(true)}
-              messagesUsed={profile?.trialMessagesUsed || 0}
+              onUpgrade={() => {
+                setPricingFeatureName(null);
+                setIsPricingOpen(true);
+              }}
+              messagesUsed={profile?.messagesToday || 0}
+              isGuest={isGuest}
             />
           </Suspense>
         )}
@@ -525,6 +825,7 @@ export default function App() {
           isOpen={isPricingOpen} 
           onClose={() => setIsPricingOpen(false)} 
           onSelect={handleSubscription}
+          featureName={pricingFeatureName}
         />
       </Suspense>
 

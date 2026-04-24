@@ -17,6 +17,7 @@ interface ChatSessionProps {
   subscriptionType?: 'free' | 'monthly' | 'lifetime';
   onUpgrade: () => void;
   messagesUsed: number;
+  isGuest?: boolean;
 }
 
 export const ChatSession: FC<ChatSessionProps> = ({ 
@@ -26,7 +27,8 @@ export const ChatSession: FC<ChatSessionProps> = ({
   initialMessage, 
   subscriptionType = 'free',
   onUpgrade,
-  messagesUsed
+  messagesUsed,
+  isGuest = false
 }) => {
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
   const [input, setInput] = useState('');
@@ -120,7 +122,18 @@ export const ChatSession: FC<ChatSessionProps> = ({
   // Load previous context and send welcome message on mount
   useEffect(() => {
     const loadContext = async () => {
-      if (!auth.currentUser) return;
+      // For Guests, we just show welcome and return
+      if (!auth.currentUser) {
+        if (isGuest) {
+          setMessages([{ role: 'model', text: coach.welcomeMessage }]);
+          if (initialMessage) {
+            setTimeout(() => {
+              handleSend(initialMessage);
+            }, 500);
+          }
+        }
+        return;
+      }
       
       try {
         const convRef = collection(db, 'users', auth.currentUser.uid, 'conversations');
@@ -128,7 +141,7 @@ export const ChatSession: FC<ChatSessionProps> = ({
         const snap = await getDocs(q).catch(e => handleFirestoreError(e, OperationType.GET, `users/${auth.currentUser?.uid}/conversations`));
         
         let previousContext = '';
-        if (snap && !snap.empty) {
+        if (subscriptionType !== 'free' && snap && !snap.empty) {
           previousContext = snap.docs
             .map(d => d.data().summary)
             .filter(Boolean)
@@ -158,7 +171,7 @@ export const ChatSession: FC<ChatSessionProps> = ({
             // Small delay to ensure UI is ready
             setTimeout(() => {
               handleSend(initialMessage);
-            }, 500);
+            }, 100);
           }
         }
       } catch (err) {
@@ -253,7 +266,7 @@ export const ChatSession: FC<ChatSessionProps> = ({
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
+        model: "gemini-3.1-flash-tts-preview",
         contents: [{ parts: [{ text }] }],
         config: {
           responseModalities: [Modality.AUDIO],
@@ -322,12 +335,26 @@ export const ChatSession: FC<ChatSessionProps> = ({
   const isLimitReached = subscriptionType === 'free' && localMessagesUsed >= TRIAL_LIMIT;
 
   const handleSend = async (retryCount: number | React.MouseEvent | string = 0, originalInput?: string) => {
-    if (isLimitReached) return;
     const actualRetryCount = typeof retryCount === 'number' ? retryCount : 0;
     const forcedInput = typeof retryCount === 'string' ? retryCount : originalInput || null;
     
     const messageToSend = forcedInput || input.trim();
-    if (!messageToSend || (isLoading && actualRetryCount === 0) || !auth.currentUser || !conversationId) return;
+    if (!messageToSend || (isLoading && actualRetryCount === 0)) return;
+    if (!isGuest && (!auth.currentUser || !conversationId)) return;
+
+    // Check if limit reached before sending
+    if (subscriptionType === 'free' && localMessagesUsed >= 5) {
+      setMessages(prev => [
+        ...prev, 
+        { role: 'user' as const, text: messageToSend },
+        { role: 'model' as const, text: "This has been a great sit. I can feel you making progress. Your cushion only goes so far today though — come back tomorrow for your next free session, or upgrade to Premium to keep going right now." }
+      ]);
+      setInput('');
+      setTimeout(() => {
+        onUpgrade();
+      }, 2000);
+      return;
+    }
 
     const userMessage = messageToSend;
     
@@ -335,15 +362,20 @@ export const ChatSession: FC<ChatSessionProps> = ({
     if (actualRetryCount === 0) {
       setMessages(prev => [...prev, { role: 'user' as const, text: userMessage }]);
       if (typeof retryCount !== 'string') setInput('');
-      setLocalMessagesUsed(prev => prev + 1);
+      
+      const newMessagesUsed = localMessagesUsed + 1;
+      setLocalMessagesUsed(newMessagesUsed);
+
+      // If this was the last free message, maybe set an indicator, but we let it process normally.
     }
+
     
     setIsLoading(true);
 
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
-      const systemInstruction = `${coach.systemInstruction}\n\nCORE DIRECTIVES: Be extremely logical, accurate, and fast. ${context ? `\n\n${context}` : ''}\n\nAlways remember previous improvements discussed in past sessions.\n\nMODE: You are currently in ${fluffMode} mode. ${fluffMode === 'fluffy' ? 'Be playful, metaphorical, and encouraging.' : 'Be direct, step-by-step, and minimal.'}`;
+      const systemInstruction = `${coach.systemInstruction}\n\nCORE DIRECTIVES: Be extremely logical, accurate, and lightning fast. Give high-impact, brief responses. Keep ALL your responses UNDER 3 SENTENCES and under 50 words max. Avoid filler and excessive formatting. Get straight to the value. ${context ? `\n\n${context}` : ''}\n\nAlways remember previous improvements discussed in past sessions.\n\nMODE: You are currently in ${fluffMode} mode. ${fluffMode === 'fluffy' ? 'Be playful and metaphorical, but keep it concise.' : 'Be direct, step-by-step, and minimal.'}`;
 
       // Filter out empty messages and ensure the sequence starts with 'user'
       let history = messages
@@ -400,19 +432,25 @@ export const ChatSession: FC<ChatSessionProps> = ({
       }
 
       const updatedMessages = [...messages, { role: 'user' as const, text: userMessage }, { role: 'model' as const, text: fullText }];
-      const convRef = doc(db, 'users', auth.currentUser.uid, 'conversations', conversationId);
       
       // Async update without blocking UI
       const saveToFirestore = async () => {
+        if (!auth.currentUser || !conversationId) return;
         try {
-          const summaryResponse = await ai.models.generateContent({
-            model: "gemini-3.1-flash-lite-preview",
-            contents: `Summarize this session's key takeaways and improvements for future reference in 2 sentences:\n${updatedMessages.map(m => `${m.role}: ${m.text}`).join('\n')}`,
-          });
+          const convRef = doc(db, 'users', auth.currentUser.uid, 'conversations', conversationId);
+          let sessionSummary = '';
+          
+          if (subscriptionType !== 'free') {
+            const summaryResponse = await ai.models.generateContent({
+              model: "gemini-3.1-flash-lite-preview",
+              contents: `Summarize this session's key takeaways and improvements for future reference in 2 sentences:\n${updatedMessages.map(m => `${m.role}: ${m.text}`).join('\n')}`,
+            });
+            sessionSummary = summaryResponse.text || '';
+          }
 
           await updateDoc(convRef, {
             messages: updatedMessages.map(m => ({ ...m, timestamp: new Date().toISOString() })),
-            summary: summaryResponse.text || ''
+            summary: sessionSummary
           }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${auth.currentUser?.uid}/conversations/${conversationId}`));
         } catch (e) {
           console.warn("Non-critical storage error:", e);

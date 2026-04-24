@@ -1,20 +1,26 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Beanibase
 
-# Run and deploy your AI Studio app
+A supportive AI platform where personas sit with you through the journey of growth. Experience personalized coaching in a cozy, professional space.
 
-This contains everything you need to run your app locally.
+## Features
+- **AI Personas:** Specialized coaches that learn and adapt to your growth.
+- **Cushion Mechanics:** Interactive "cushion fluffiness" tracking your session consistency.
+- **Stripe Integration:** Professional subscription tiers and lifetime access logic.
+- **Trial System:** Seamless 5-message trial for new visitors.
+- **Trade Lab:** Advanced technical coaching for builders and creators.
 
-View your app in AI Studio: https://ai.studio/apps/876b6a61-c0ba-47c5-adc0-58bad21ea690
+## Tech Stack
+- **Frontend:** React + Vite + Tailwind CSS + Framer Motion
+- **Backend:** Express (Node.js)
+- **Database & Auth:** Firebase (Firestore & Google Auth)
+- **AI:** Google Gemini API
 
-## Run Locally
+## Setup
+1. Clone the repository.
+2. Install dependencies: `npm install`
+3. Set up environment variables in `.env` (refer to `.env.example`).
+4. Run development server: `npm run dev`
 
-**Prerequisites:**  Node.js
+---
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+*This project was built with AI Studio Build.*

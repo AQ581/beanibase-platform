@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -10,20 +10,34 @@
 
 @layer base {
   body {
-    @apply bg-[#F5F2ED] text-[#1A1A1A] font-sans antialiased;
+    @apply bg-[#F5F2ED] text-[#1A1A1A] font-sans antialiased overflow-x-hidden selection:bg-orange-200;
   }
 }
 
-.glass {
-  @apply bg-white/10 backdrop-blur-xl border border-white/20;
-}
+@layer utilities {
+  .glass {
+    @apply bg-white/40 backdrop-blur-2xl border border-white/40 shadow-xl;
+  }
 
-.luxury-card {
-  @apply relative overflow-hidden rounded-[32px] border border-black/5 bg-white transition-all duration-500 hover:scale-[1.02] hover:shadow-2xl;
+  .luxury-card {
+    @apply relative overflow-hidden rounded-[40px] border border-black/5 bg-white transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)] hover:translate-y-[-8px] hover:shadow-[0_32px_64px_-12px_rgba(0,0,0,0.12)];
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-linear-to-br from-[#1A1A1A] to-[#4A4A4A];
+  }
+
+  .button-premium {
+    @apply relative overflow-hidden rounded-full px-8 py-3 font-semibold transition-all duration-300 active:scale-95;
+  }
+
+  .shadow-soft {
+    @apply shadow-[0_8px_30px_rgb(0,0,0,0.04)];
+  }
 }
 
 .custom-scrollbar::-webkit-scrollbar {
-  width: 4px;
+  width: 5px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {

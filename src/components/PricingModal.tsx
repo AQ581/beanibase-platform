@@ -7,9 +7,10 @@ interface PricingModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (type: 'monthly' | 'lifetime') => void;
+  featureName?: string | null;
 }
 
-export const PricingModal: FC<PricingModalProps> = ({ isOpen, onClose, onSelect }) => {
+export const PricingModal: FC<PricingModalProps> = ({ isOpen, onClose, onSelect, featureName }) => {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -39,49 +40,52 @@ export const PricingModal: FC<PricingModalProps> = ({ isOpen, onClose, onSelect 
                   <Crown className="w-3 h-3" />
                   <span>Premium Access</span>
                 </div>
-                <h2 className="text-4xl font-serif font-bold tracking-tight">
-                  Fair prices. <br />
-                  <span className="text-orange-600 italic">No fine-print surprises.</span>
-                </h2>
+                {featureName ? (
+                  <h2 className="text-4xl font-serif font-bold tracking-tight">
+                    Unlock <br />
+                    <span className="text-orange-600 italic">{featureName}.</span>
+                  </h2>
+                ) : (
+                  <h2 className="text-4xl font-serif font-bold tracking-tight">
+                    Your cushion <br />
+                    <span className="text-orange-600 italic">needs a refill.</span>
+                  </h2>
+                )}
                 <p className="text-gray-500 font-light leading-relaxed">
-                  Like a good cushion should be.
+                  {featureName 
+                    ? `Upgrade to Premium to access ${featureName} and unlock the full potential of Beanibase.` 
+                    : `Wait until tomorrow for free, or upgrade to Premium now to keep going.`}
                 </p>
               </div>
 
               <div className="space-y-4">
-                <BenefitItem icon={<Sparkles className="w-5 h-5 text-orange-400" />} text="All coaches included" />
-                <BenefitItem icon={<Zap className="w-5 h-5 text-blue-400" />} text="Fluff levels 1–10" />
-                <BenefitItem icon={<Shield className="w-5 h-5 text-green-400" />} text="Saved chats & custom voice" />
-                <BenefitItem icon={<Heart className="w-5 h-5 text-red-400" />} text="Trade Lab Pro included" />
+                <BenefitItem icon={<Sparkles className="w-5 h-5 text-orange-400" />} text="Unlimited sits" />
+                <BenefitItem icon={<Shield className="w-5 h-5 text-green-400" />} text="Full memory & session summaries" />
+                <BenefitItem icon={<Crown className="w-5 h-5 text-amber-500" />} text="Access to all coaches" />
+                <BenefitItem icon={<Heart className="w-5 h-5 text-red-400" />} text="Trade Lab Deep Research" />
+                <p className="mt-8 text-sm italic text-gray-500 font-light border-t border-orange-100 pt-4">
+                  Cancel anytime. No pressure. Just growth.
+                </p>
               </div>
             </div>
 
             {/* Right Side: Pricing Options */}
             <div className="md:w-1/2 p-12 flex flex-col justify-center space-y-6">
               <PricingCard 
-                title="Free"
-                price="$0"
-                period=""
-                description="Forever free. Fluff levels 1–5. All coaches. Trade Lab included. No card needed."
-                onClick={() => onSelect('monthly')}
-                highlight={false}
-              />
-              
-              <PricingCard 
-                title="Beanbag Plus"
+                title="Premium"
                 price="$7"
                 period="/ mo"
-                description="Fluff levels 6–10. Crisp/Fluffy toggle. Saved chats. Custom coach voice. For the dedicated sitter."
+                description="Unlimited sits, full memory, session summaries, and access to all coaches."
                 onClick={() => onSelect('monthly')}
                 highlight={true}
               />
 
               <PricingCard 
-                title="Trade Lab Pro"
-                price="$15"
-                period="/ mo"
-                description="Parts lists. Wiring diagrams. Code exports. For builders, not just thinkers."
-                onClick={() => onSelect('monthly')}
+                title="Wait Until Tomorrow"
+                price="$0"
+                period=""
+                description="Your cushion will refill tomorrow with 2 new free sessions."
+                onClick={onClose}
                 highlight={false}
               />
 

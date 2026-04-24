@@ -1,39 +1,42 @@
 {
   "entities": {
-    "user": {
-      "title": "User",
-      "description": "A user of the Beanibase platform.",
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user account information, preference, and subscription status.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "The unique ID of the user." },
-        "email": { "type": "string", "format": "email", "description": "The user's email address." },
-        "displayName": { "type": "string", "description": "The user's display name." },
-        "photoURL": { "type": "string", "format": "uri", "description": "The user's profile picture URL." },
-        "cushionFluffiness": { "type": "number", "description": "A score representing the user's progress." },
-        "createdAt": { "type": "string", "format": "date-time", "description": "When the user account was created." }
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "cushionFluffiness": { "type": "integer" },
+        "trialMessagesUsed": { "type": "integer" },
+        "subscriptionType": { "type": "string", "enum": ["free", "monthly", "lifetime"] },
+        "subscriptionExpiry": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "email"]
+      "required": ["uid", "email", "createdAt"]
     },
-    "checkIn": {
+    "CheckIn": {
       "title": "Check-In",
-      "description": "A daily check-in or 'Return Cushion' event.",
+      "description": "Records of user check-ins with coaches.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "The ID of the user who checked in." },
-        "coachId": { "type": "string", "description": "The ID of the coach persona interacted with." },
-        "timestamp": { "type": "string", "format": "date-time", "description": "When the check-in occurred." },
-        "reflection": { "type": "string", "description": "The user's reflection or notes from the session." }
+        "uid": { "type": "string" },
+        "coachId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "reflection": { "type": "string" }
       },
       "required": ["uid", "coachId", "timestamp"]
     },
-    "conversation": {
+    "Conversation": {
       "title": "Conversation",
-      "description": "A full chat history session with a coach.",
+      "description": "Stores chat history with specific coaches.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "The ID of the user." },
-        "coachId": { "type": "string", "description": "The ID of the coach." },
-        "timestamp": { "type": "string", "format": "date-time", "description": "When the session started." },
+        "coachId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
         "messages": {
           "type": "array",
           "items": {
@@ -45,23 +48,23 @@
             }
           }
         },
-        "summary": { "type": "string", "description": "A brief summary of the session for future context." }
+        "summary": { "type": "string" }
       },
-      "required": ["uid", "couchId", "timestamp", "messages"]
+      "required": ["coachId"]
     }
   },
   "firestore": {
     "/users/{userId}": {
-      "schema": "user",
-      "description": "User profile and progress data."
+      "schema": "UserProfile",
+      "description": "Root user profile document."
     },
     "/users/{userId}/checkIns/{checkInId}": {
-      "schema": "checkIn",
-      "description": "History of user interactions with coaches."
+      "schema": "CheckIn",
+      "description": "Historical check-in logs for the user."
     },
-    "/users/{userId}/conversations/{conversationId}": {
-      "schema": "conversation",
-      "description": "Full chat histories for context and follow-up."
+    "/users/{userId}/conversations/{convId}": {
+      "schema": "Conversation",
+      "description": "Chat sessions per coach."
     }
   }
 }

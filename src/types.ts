@@ -25,6 +25,10 @@ export interface UserProfile {
   subscriptionType?: 'free' | 'monthly' | 'lifetime';
   subscriptionExpiry?: string;
   createdAt: string;
+  
+  messagesToday?: number;
+  sessionsToday?: number;
+  lastActiveDate?: string;
 }
 
 export interface CheckIn {
