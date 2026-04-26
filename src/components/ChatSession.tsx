@@ -53,6 +53,8 @@ export const ChatSession: FC<ChatSessionProps> = ({
   const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recognitionRef = useRef<any>(null);
+  const messageTimestampsRef = useRef<number[]>([]);
+  const hasSentInitialRef = useRef(false);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -126,7 +128,8 @@ export const ChatSession: FC<ChatSessionProps> = ({
       if (!auth.currentUser) {
         if (isGuest) {
           setMessages([{ role: 'model', text: coach.welcomeMessage }]);
-          if (initialMessage) {
+          if (initialMessage && !hasSentInitialRef.current) {
+            hasSentInitialRef.current = true;
             setTimeout(() => {
               handleSend(initialMessage);
             }, 500);
@@ -167,7 +170,8 @@ export const ChatSession: FC<ChatSessionProps> = ({
           // Initial welcome message from the coach
           setMessages([{ role: 'model', text: coach.welcomeMessage }]);
 
-          if (initialMessage) {
+          if (initialMessage && !hasSentInitialRef.current) {
+            hasSentInitialRef.current = true;
             // Small delay to ensure UI is ready
             setTimeout(() => {
               handleSend(initialMessage);
@@ -342,6 +346,23 @@ export const ChatSession: FC<ChatSessionProps> = ({
     if (!messageToSend || (isLoading && actualRetryCount === 0)) return;
     if (!isGuest && (!auth.currentUser || !conversationId)) return;
 
+    // Rate Limiting: 3 messages within 5 seconds
+    const now = Date.now();
+    const windowStart = now - 5000;
+    messageTimestampsRef.current = messageTimestampsRef.current.filter(ts => ts > windowStart);
+    
+    if (messageTimestampsRef.current.length >= 3 && actualRetryCount === 0) {
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        text: "Whoa. You're sitting very fast. Take a breath. The cushion isn't going anywhere. Try again in a few seconds." 
+      }]);
+      return;
+    }
+    
+    if (actualRetryCount === 0) {
+      messageTimestampsRef.current.push(now);
+    }
+
     // Check if limit reached before sending
     if (subscriptionType === 'free' && localMessagesUsed >= 5) {
       setMessages(prev => [
@@ -375,7 +396,11 @@ export const ChatSession: FC<ChatSessionProps> = ({
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
-      const systemInstruction = `${coach.systemInstruction}\n\nCORE DIRECTIVES: Be extremely logical, accurate, and lightning fast. Give high-impact, brief responses. Keep ALL your responses UNDER 3 SENTENCES and under 50 words max. Avoid filler and excessive formatting. Get straight to the value. ${context ? `\n\n${context}` : ''}\n\nAlways remember previous improvements discussed in past sessions.\n\nMODE: You are currently in ${fluffMode} mode. ${fluffMode === 'fluffy' ? 'Be playful and metaphorical, but keep it concise.' : 'Be direct, step-by-step, and minimal.'}`;
+      const lengthConstraint = coach.id === 'trade-skill-learning' 
+        ? "Give comprehensive, deep, and structured responses without strict length limits. Focus on technical depth and phased mastery."
+        : "Keep ALL your responses UNDER 3 SENTENCES and under 50 words max. Avoid filler and excessive formatting. Get straight to the value.";
+
+      const systemInstruction = `${coach.systemInstruction}\n\nCORE DIRECTIVES: Be extremely logical, accurate, and lightning fast. ${lengthConstraint} ${context ? `\n\n${context}` : ''}\n\nAlways remember previous improvements discussed in past sessions.\n\nMODE: You are currently in ${fluffMode} mode. ${fluffMode === 'fluffy' ? 'Be playful and metaphorical, but keep it concise.' : 'Be direct, step-by-step, and minimal.'}`;
 
       // Filter out empty messages and ensure the sequence starts with 'user'
       let history = messages
@@ -469,11 +494,6 @@ export const ChatSession: FC<ChatSessionProps> = ({
         errorMessage = "We broke it. Not you. Beanibase is having a small meltdown. Give us 2 minutes. We'll fluff the servers and try again. Refresh. Or come back. We'll be here.";
       }
 
-      if (actualRetryCount < 2) {
-        console.log(`Retrying... (${actualRetryCount + 1}/2)`);
-        setTimeout(() => handleSend(actualRetryCount + 1, userMessage), 1000);
-        return;
-      }
       setMessages(prev => [...prev, { role: 'model', text: errorMessage }]);
     } finally {
       setIsLoading(false);
@@ -520,11 +540,13 @@ export const ChatSession: FC<ChatSessionProps> = ({
 
           {/* Fluff Controls */}
           <div className="flex items-center space-x-4">
-            {/* Fluff Meter */}
-            <div className="flex space-x-1">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className={cn("w-2 h-2 rounded-full", i <= fluffLevel ? "bg-orange-500" : "bg-black/10")} />
-              ))}
+            <div className="flex items-center space-x-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">Fluffy</span>
+              <div className="flex space-x-1" title="Cushion Fluffiness Level">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className={cn("w-2 h-2 rounded-full", i <= fluffLevel ? "bg-orange-500" : "bg-black/10")} />
+                ))}
+              </div>
             </div>
 
             {/* Mode Toggle */}
