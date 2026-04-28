@@ -27,6 +27,8 @@ const Loader2 = ({ className }: { className?: string }) => (
   </svg>
 );
 
+const OWNER_EMAIL = 'humanrise602@gmail.com';
+
 export default function App() {
   const { user, loading, isGuest, setIsGuest } = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -120,6 +122,12 @@ export default function App() {
            requiresUpdate = true;
         }
 
+        // Owner auto-upgrade
+        if (user.email === OWNER_EMAIL && data.subscriptionType !== 'lifetime') {
+          data.subscriptionType = 'lifetime';
+          requiresUpdate = true;
+        }
+
         if (requiresUpdate) {
             setDoc(userRef, data, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
         }
@@ -136,7 +144,7 @@ export default function App() {
           messagesToday: 0,
           sessionsToday: 0,
           lastActiveDate: today,
-          subscriptionType: 'free',
+          subscriptionType: user.email === OWNER_EMAIL ? 'lifetime' : 'free',
           createdAt: new Date().toISOString(),
         };
         setDoc(userRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));

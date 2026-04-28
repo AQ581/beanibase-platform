@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, FC } from 'react';
-import { GoogleGenAI, ThinkingLevel, Modality } from "@google/genai";
+import { useState, useEffect, useRef, FC, useMemo } from 'react';
+import { GoogleGenAI, Modality } from "@google/genai";
 import { X, Send, Sparkles, Loader2, Volume2, Image as ImageIcon, Crown, Mic, MicOff, Square, VolumeX } from 'lucide-react';
 import { Coach } from '../types';
 import { cn } from '../lib/utils';
@@ -30,6 +30,7 @@ export const ChatSession: FC<ChatSessionProps> = ({
   messagesUsed,
   isGuest = false
 }) => {
+  const ai = useMemo(() => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }), []);
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -55,6 +56,8 @@ export const ChatSession: FC<ChatSessionProps> = ({
   const recognitionRef = useRef<any>(null);
   const messageTimestampsRef = useRef<number[]>([]);
   const hasSentInitialRef = useRef(false);
+  const lastSpokenTextRef = useRef<string | null>(null);
+  const cachedAudioRef = useRef<string | null>(null);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -240,6 +243,12 @@ export const ChatSession: FC<ChatSessionProps> = ({
       audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
     }
     const audioCtx = audioCtxRef.current;
+
+    // Resuming AudioContext for browser autoplay policies
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+
     const buffer = audioCtx.createBuffer(1, floatData.length, 24000);
     buffer.getChannelData(0).set(floatData);
     
@@ -260,6 +269,13 @@ export const ChatSession: FC<ChatSessionProps> = ({
   };
 
   const handleSpeak = async (text: string, loop: boolean = false) => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume();
+    }
+
     if (isSpeaking && !loop) {
       stopAudio();
     }
@@ -268,24 +284,48 @@ export const ChatSession: FC<ChatSessionProps> = ({
     if (!loop) setIsTTSLoading(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-tts-preview",
-        contents: [{ parts: [{ text }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: coach.voiceName },
-            },
-          },
-        },
-      });
+      // Check cache first
+      if (text === lastSpokenTextRef.current && cachedAudioRef.current) {
+        setIsTTSLoading(false);
+        playPCM(cachedAudioRef.current, () => {
+          if (loop && isLooping) {
+            setTimeout(() => {
+              if (isLooping) handleSpeak(text, true);
+            }, 300);
+          }
+        });
+        return;
+      }
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      let response: any;
+      try {
+        response = await ai.models.generateContent({
+          model: "gemini-3.1-flash-tts-preview",
+          contents: [{ role: "user", parts: [{ text }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: coach.voiceName || 'Kore' },
+              },
+            },
+          }
+        });
+      } catch (err: any) {
+        console.error("TTS generation error:", err);
+        setIsTTSLoading(false);
+        setIsSpeaking(false);
+        return;
+      }
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
       setIsTTSLoading(false);
 
       if (base64Audio) {
+        // Update cache
+        lastSpokenTextRef.current = text;
+        cachedAudioRef.current = base64Audio;
+
         playPCM(base64Audio, () => {
           if (loop && isLooping) {
             // Small delay before repeating
@@ -311,18 +351,17 @@ export const ChatSession: FC<ChatSessionProps> = ({
     setIsVisualizing(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const prompt = `A cozy, atmospheric room representing the current mood of this conversation: ${messages.slice(-3).map(m => m.text).join(' ')}. Style: Minimalist, soft lighting, 4k, cinematic.`;
       
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
-        contents: { parts: [{ text: prompt }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           imageConfig: { aspectRatio: "16:9" }
         }
       });
 
-      for (const part of response.candidates[0].content.parts) {
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
           setMoodImage(`data:image/png;base64,${part.inlineData.data}`);
           break;
@@ -346,12 +385,15 @@ export const ChatSession: FC<ChatSessionProps> = ({
     if (!messageToSend || (isLoading && actualRetryCount === 0)) return;
     if (!isGuest && (!auth.currentUser || !conversationId)) return;
 
-    // Rate Limiting: 3 messages within 5 seconds
+    // Rate Limiting: 4 messages within 5 seconds (Exempt lifetime/owner)
     const now = Date.now();
     const windowStart = now - 5000;
     messageTimestampsRef.current = messageTimestampsRef.current.filter(ts => ts > windowStart);
     
-    if (messageTimestampsRef.current.length >= 3 && actualRetryCount === 0) {
+    // Safety: If this is the absolute first message of the session, never block
+    const isFirstMessage = messages.length <= 1;
+
+    if (!isFirstMessage && subscriptionType !== 'lifetime' && messageTimestampsRef.current.length >= 4 && actualRetryCount === 0) {
       setMessages(prev => [...prev, { 
         role: 'model', 
         text: "Whoa. You're sitting very fast. Take a breath. The cushion isn't going anywhere. Try again in a few seconds." 
@@ -394,8 +436,6 @@ export const ChatSession: FC<ChatSessionProps> = ({
     setIsLoading(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
       const lengthConstraint = coach.id === 'trade-skill-learning' 
         ? "Give comprehensive, deep, and structured responses without strict length limits. Focus on technical depth and phased mastery."
         : "Keep ALL your responses UNDER 3 SENTENCES and under 50 words max. Avoid filler and excessive formatting. Get straight to the value.";
@@ -413,7 +453,7 @@ export const ChatSession: FC<ChatSessionProps> = ({
       }
 
       const responseStream = await ai.models.generateContentStream({
-        model: "gemini-3.1-flash-lite-preview",
+        model: "gemini-3-flash-preview",
         contents: [
           ...history,
           { role: 'user', parts: [{ text: userMessage }] }
@@ -424,10 +464,15 @@ export const ChatSession: FC<ChatSessionProps> = ({
       });
 
       let fullText = "";
+      let hasStartedStreaming = false;
       setMessages(prev => [...prev, { role: 'model', text: "" }]);
 
       for await (const chunk of responseStream) {
-        const chunkText = chunk.text || "";
+        if (!hasStartedStreaming) {
+          hasStartedStreaming = true;
+          setIsLoading(false); // Stop header dots as soon as streaming starts
+        }
+        const chunkText = chunk.text;
         fullText += chunkText;
         setMessages(prev => {
           const last = prev[prev.length - 1];
@@ -465,12 +510,14 @@ export const ChatSession: FC<ChatSessionProps> = ({
           const convRef = doc(db, 'users', auth.currentUser.uid, 'conversations', conversationId);
           let sessionSummary = '';
           
-          if (subscriptionType !== 'free') {
-            const summaryResponse = await ai.models.generateContent({
-              model: "gemini-3.1-flash-lite-preview",
-              contents: `Summarize this session's key takeaways and improvements for future reference in 2 sentences:\n${updatedMessages.map(m => `${m.role}: ${m.text}`).join('\n')}`,
+          try {
+            const response = await ai.models.generateContent({
+              model: "gemini-3-flash-preview",
+              contents: [{ role: 'user', parts: [{ text: `Summarize this session's key takeaways and improvements for future reference in 2 sentences:\n${updatedMessages.map(m => `${m.role}: ${m.text}`).join('\n')}` }] }],
             });
-            sessionSummary = summaryResponse.text || '';
+            sessionSummary = response.text || '';
+          } catch (summaryErr) {
+            console.warn("Summary generation failed:", summaryErr);
           }
 
           await updateDoc(convRef, {
@@ -489,6 +536,11 @@ export const ChatSession: FC<ChatSessionProps> = ({
       
       let errorMessage = "I'm having a momentary lapse in connection. Please try sending your message again.";
       if (err.message?.includes('429')) {
+        if (actualRetryCount < 1) {
+          console.log("Rate limited. Retrying once...");
+          setTimeout(() => handleSend(actualRetryCount + 1, userMessage), 1500);
+          return;
+        }
         errorMessage = "Whoa. You're sitting very fast. Take a breath. The cushion isn't going anywhere. Try again in a few seconds. (This is a soft limit, not a punishment.)";
       } else if (err.message?.includes('500')) {
         errorMessage = "We broke it. Not you. Beanibase is having a small meltdown. Give us 2 minutes. We'll fluff the servers and try again. Refresh. Or come back. We'll be here.";
@@ -529,6 +581,13 @@ export const ChatSession: FC<ChatSessionProps> = ({
             <div>
               <div className="flex items-center space-x-2">
                 <h2 className="text-xl font-display font-bold">{coach.name}</h2>
+                {isLoading && (
+                  <div className="flex space-x-1 ml-2">
+                    <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1.5, delay: 0 }} className="w-1.5 h-1.5 bg-orange-500 rounded-full" />
+                    <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1.5, delay: 0.2 }} className="w-1.5 h-1.5 bg-orange-500 rounded-full" />
+                    <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1.5, delay: 0.4 }} className="w-1.5 h-1.5 bg-orange-500 rounded-full" />
+                  </div>
+                )}
                 <div className="flex items-center space-x-1 px-2 py-0.5 bg-black/5 rounded-full">
                   <Crown className="w-3 h-3 text-orange-500" />
                   <span className="text-[10px] font-bold uppercase tracking-wider">Premium</span>
